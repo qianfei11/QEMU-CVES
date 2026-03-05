@@ -1,0 +1,40 @@
+# macOS metadata
+.DS_Store
+
+# Local symlinks / workarounds
+venom
+
+# Pre-built / generated binaries in any sub-project
+**/qemu-system-x86_64
+**/bzImage
+**/rootfs.cpio
+**/rootfs/exp
+
+# Disk images created for exploits
+**/usb.img
+**/scratch.img
+**/nvme.img
+**/ubuntu.img
+**/ubuntu*.qcow2
+
+# QEMU and kernel source trees
+**/qemu-*/
+**/linux-*/
+
+# BIOS ROM files (copied from build)
+**/pc-bios/
+
+# busybox and symlinks (installed by build.sh)
+**/rootfs/bin/
+
+# Kernel build artefacts
+**/*.ko
+**/*.o
+**/.*.cmd
+**/.tmp_versions/
+**/modules.order
+**/Module.symvers
+
+# Claude Code session data (local only)
+.claude/projects/
+.claude/settings.local.json

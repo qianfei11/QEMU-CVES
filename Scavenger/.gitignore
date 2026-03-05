@@ -1,0 +1,17 @@
+qemu-system-x86_64
+bzImage
+rootfs.cpio
+nvme.img
+ubuntu.img
+*.qcow2
+pc-bios/
+qemu-src/
+linux-*/
+rootfs/bin/
+rootfs/exp
+rootfs/*.ko
+rootfs/*.o
+rootfs/.*.cmd
+rootfs/.tmp_versions/
+rootfs/modules.order
+rootfs/Module.symvers
