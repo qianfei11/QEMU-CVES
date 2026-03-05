@@ -175,8 +175,8 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
   with `make IASL= subdir-x86_64-softmmu` to avoid incompatibility with
   modern `iasl`.
 - **Library path**: if your system glibc differs from the build environment,
-  prepend `LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib` when running
-  `qemu-system-x86_64` directly.
+  prepend `LD_LIBRARY_PATH=<path-to-libs>` when running
+  `qemu-system-x86_64` directly (e.g. a conda environment's `lib/` directory).
 
 ---
 

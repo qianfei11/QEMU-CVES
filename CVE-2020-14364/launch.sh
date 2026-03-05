@@ -6,7 +6,6 @@ set -e
 cd rootfs && ./pack.sh
 cd ..
 
-LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib \
 ./qemu-system-x86_64 \
     -L ./pc-bios \
     -m 512 -smp 2 \

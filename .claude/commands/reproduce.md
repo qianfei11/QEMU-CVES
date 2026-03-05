@@ -96,8 +96,8 @@ Typical crash indicators:
 
 ## Environment Notes
 
-- **LD_LIBRARY_PATH**: If QEMU segfaults on launch, try:
-  `LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib ./qemu-system-x86_64 ...`
+- **LD_LIBRARY_PATH**: If QEMU segfaults on launch due to library mismatches,
+  prepend `LD_LIBRARY_PATH=<path-to-libs>` when invoking `./qemu-system-x86_64`.
 - **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
 - **MMIO CVEs**: need `CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n` in kernel
