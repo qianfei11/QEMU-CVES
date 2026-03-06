@@ -33,6 +33,7 @@ CVE-XXXX-YYYY/
 | CVE-2020-8608 | `CVE-2020-8608/` | 4.2.1 | `slirp/tcp_subr.c` | Heap overflow |
 | CVE-2020-14364 | `CVE-2020-14364/` | 4.2.1 | `hw/usb/core.c` | OOB write |
 | CVE-2020-25084 | `Scavenger/` | 5.0.0 | `hw/block/nvme.c` | UAF |
+| CVE-2020-25084 (xHCI) | `CVE-2020-25084/` | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure |
 
 ## Standard Workflow
 
@@ -94,6 +95,7 @@ Typical crash indicators:
 - **PVSCSI**: crash in `pvscsi_process_io` (SG list overflow)
 - **USB EHCI (CVE-2020-14364)**: `rax = 0x4141414141414141` in `usb_bus_from_device`; crash in `ehci_work_bh` → `ehci_advance_async_state` → `ehci_state_execute` → `ehci_execute` → `usb_handle_packet` → `usb_packet_set_state` (heap neighbor of `data_buf` overwritten)
 - **Scavenger (CVE-2020-25084)**: SIGSEGV in `object_unref` called from `qemu_sglist_destroy`; `obj` points into QEMU `.text` (stack garbage used as `qsg->dev`). Full backtrace: `object_unref ← qemu_sglist_destroy ← nvme_map_prp ← nvme_dma_read_prp ← nvme_identify_ctrl ← nvme_process_sq`
+- **CVE-2020-25084 xHCI**: SIGABRT in `usb_packet_copy` — `assert(p->actual_length + bytes <= iov->size)` fires with `iov->size=0`. Full backtrace: `usb_packet_copy ← do_parameter ← usb_process_one ← usb_handle_packet ← xhci_fire_ctl_transfer ← xhci_kick_epctx ← xhci_kick_ep ← xhci_doorbell_write`
 
 ## Environment Notes
 
@@ -193,6 +195,31 @@ Typical crash indicators:
     m_data as "free"), NOT the bytes available after `m_data + m_len`. Actual free space at
     end of data = `(m_ext + m_size) − (m_data + m_len)`; with FRAG1=1488 this equals 0.
 - **MMIO CVEs**: need `CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n` in kernel
+- **xHCI MMIO exploit pattern (CVE-2020-25084)**:
+  - Find NEC xHCI by scanning `/sys/bus/pci/devices/*/class` for `0x0c0330`.
+  - Map BAR0 via `/dev/mem`; read HCCPARAMS1 at offset 0x10 (CSZ bit = context size).
+  - QEMU 4.x/5.x xHCI: context size is **hardcoded 32 bytes** regardless of CSZ.
+    Input context layout: `[ICC@0][SlotCtx@32][EP0Ctx@64]`
+  - xHCI init: HCRST, configure ERST/CRCR/DCBAAP, start (RS=1), then Enable Slot.
+  - `HCSPARAMS1` field layout: bits[31:24]=numports, bits[7:0]=numslots (NOT numports).
+  - **NEC xHCI sets `XHCI_FLAG_SS_FIRST`**: USB3 (SS) ports are at indices 0..3
+    (RHPORT 1..4), USB2 (HS) ports are at indices 4..7 (RHPORT 5..8).
+    `usb-storage` (default HS) connects to USB2 port → RHPORT=5.
+  - PORTSC register for port i: `BAR0 + 0x40 + 0x400 + 0x10*i`.
+  - Trigger: send Address Device with EP0 context pointing to an EP0 Transfer Ring.
+    In the EP0 ring, create SETUP+DATA+STATUS control transfer.
+    **Set DATA TRB direction = OUT (TRB_TR_DIR=0)** while the transfer is IN
+    (GET_DESCRIPTOR → bmRequestType=0x80). The direction mismatch causes
+    `xhci_xfer_create_sgl` to call `xhci_die` and destroy the SGL (nsg→0).
+    `xhci_setup_packet` ignores the error; `usb_packet_map` with nsg=0 returns 0
+    but iov.size=0. `usb_handle_packet` → `usb_packet_copy` → SIGABRT.
+  - **Why unmapped PA does NOT trigger**: `address_space_map()` allocates a bounce
+    buffer for non-RAM regions (`bounce.in_use` check), returning non-NULL so
+    `usb_packet_map` succeeds with iov.size=wLength. The assert `18 ≤ wLength` passes.
+  - `usb_packet_map` returns −1 only when `bounce.in_use` is already true (another
+    concurrent DMA in progress) — not reliably triggerable from a single guest thread.
+  - QEMU 4.2.1 and 5.0.0 are both affected; the QEMU 4.2.1 binary from CVE-2020-14364
+    can be reused (`LD_LIBRARY_PATH=$(pwd)` for libtinfow.so.6).
 
 ## Your Task
 
