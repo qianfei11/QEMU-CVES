@@ -1,6 +1,6 @@
 ---
 description: Guide QEMU CVE reproduction — build environment, trigger vulnerability, debug with GDB
-allowed-tools: Bash(git *), Bash(ls *), Bash(cat *), Bash(chmod *), Bash(./build.sh*), Bash(./launch.sh*), Bash(./attach.sh*), Bash(gcc *), Bash(gdb *), Bash(make *), Bash(cp *), Bash(rm *)
+allowed-tools: Bash(git *), Bash(ls *), Bash(cat *), Bash(chmod *), Bash(./build.sh*), Bash(./exploit.sh*), Bash(./launch.sh*), Bash(./attach.sh*), Bash(gcc *), Bash(gdb *), Bash(make *), Bash(cp *), Bash(rm *)
 ---
 
 You are assisting with QEMU/KVM vulnerability reproduction in the `QEMU-CVES` project.
@@ -12,6 +12,7 @@ Each CVE subdirectory is self-contained:
 ```
 CVE-XXXX-YYYY/
 ├── build.sh      # clones + builds vulnerable QEMU & Linux 5.4.40
+├── exploit.sh    # one-click reproduction (build check → GDB crash demo)
 ├── launch.sh     # interactive VM session
 ├── attach.sh     # GDB session (rdinit=/a.sh auto-runs /exp, catches SIGSEGV)
 ├── README.md     # root-cause analysis, patch, references
@@ -32,10 +33,21 @@ CVE-XXXX-YYYY/
 | CVE-2019-14378 | `CVE-2019-14378/` | 4.0.0 | `slirp/ip_input.c` | Heap overflow |
 | CVE-2020-8608 | `CVE-2020-8608/` | 4.2.1 | `slirp/tcp_subr.c` | Heap overflow |
 | CVE-2020-14364 | `CVE-2020-14364/` | 4.2.1 | `hw/usb/core.c` | OOB write |
-| CVE-2020-25084 | `Scavenger/` | 5.0.0 | `hw/block/nvme.c` | UAF |
 | CVE-2020-25084 (xHCI) | `CVE-2020-25084/` | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure |
+| CVE-2020-25084 (NVMe) | `Scavenger/` | 5.0.0 | `hw/block/nvme.c` | UAF |
 
 ## Standard Workflow
+
+### Step 0 — One-click reproduction (recommended)
+
+```bash
+cd <CVE-dir>
+./exploit.sh
+```
+
+`exploit.sh` checks for `qemu-system-x86_64`, runs `build.sh` automatically if
+missing, then prints the expected crash indicator and calls `attach.sh`.
+For CVE-2019-14378 (hang, not crash), a 90-second timeout is used.
 
 ### Step 1 — Build
 
@@ -100,7 +112,9 @@ Typical crash indicators:
 ## Environment Notes
 
 - **LD_LIBRARY_PATH**: If QEMU segfaults on launch due to library mismatches,
-  prepend `LD_LIBRARY_PATH=<path-to-libs>` when invoking `./qemu-system-x86_64`.
+  `attach.sh` scripts that need it auto-detect the conda base (`conda info --base`)
+  and prepend its `lib/` directory to `LD_LIBRARY_PATH`.  You can also set
+  `LD_LIBRARY_PATH` manually before running any script.
 - **QEMU 4.0.0 library quirk**: links against `libtinfow.so.6` (wide-char ncurses);
   if the system only has `libtinfo.so.6`, create a symlink in a local `libs/` dir:
   `ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 libs/libtinfow.so.6` and
@@ -128,7 +142,7 @@ Typical crash indicators:
   - Map BAR0 via `/dev/mem`; allocate two 4096-byte locked pages for ASQ and ACQ.
   - NVMe init: disable (CC.EN=0, wait CSTS.RDY=0), set AQA/ASQ/ACQ, enable (CC=0x00460001), wait CSTS.RDY=1.
   - Trigger: submit Identify Controller SQE with `prp1 = bar2_phys + 0x500` (in CMB, non-page-aligned), `prp2 = 0`; ring SQ0 doorbell at BAR0 + 0x1000.
-  - `--extra-cflags="-pg"` required for Scavenger build; `LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib` needed at runtime.
+  - `--extra-cflags="-pg"` required for Scavenger build; `LD_LIBRARY_PATH=$(conda info --base)/lib` needed at runtime if system libs are mismatched (auto-detected by the updated `attach.sh`).
 - **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
 - **SLiRP EMU subsystem (CVE-2020-8608)**: libslirp 4.1.0 has `tcp_emu()` but it is

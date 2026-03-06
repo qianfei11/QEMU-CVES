@@ -7,7 +7,10 @@ set -e
 cd rootfs && ./pack.sh
 cd ..
 
-LD_LIBRARY_PATH="/home/bea1e/miniconda3/lib:$LD_LIBRARY_PATH" \
+# Prepend conda base lib dir if conda is available (needed for glibc/ncurses compat).
+_CONDA_LIB="$(conda info --base 2>/dev/null)/lib"
+[ -d "$_CONDA_LIB" ] && export LD_LIBRARY_PATH="$_CONDA_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+unset _CONDA_LIB
 gdb \
     -ex 'set confirm off' \
     -ex 'set pagination off' \

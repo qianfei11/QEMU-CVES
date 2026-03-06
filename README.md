@@ -16,7 +16,8 @@ Each subdirectory contains a self-contained reproduction environment: build scri
 | `CVE-2019-14378/` | CVE-2019-14378 | 4.0.0 | `slirp/ip_input.c` | Heap buffer overflow |
 | `CVE-2020-8608/` | CVE-2020-8608 | 4.2.1 | `slirp/tcp_subr.c` | Heap buffer overflow |
 | `CVE-2020-14364/` | CVE-2020-14364 | 4.2.1 | `hw/usb/core.c` | Out-of-bounds write |
-| `Scavenger/` | CVE-2020-25084 | 5.0.0 | `hw/block/nvme.c` | Use-after-free |
+| `CVE-2020-25084/` | CVE-2020-25084 | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure (xHCI) |
+| `Scavenger/` | CVE-2020-25084 | 5.0.0 | `hw/block/nvme.c` | Use-after-free (NVMe) |
 
 ---
 
@@ -100,6 +101,23 @@ Patched by moving the `s->setup_len` assignment after the bounds check.
 
 ---
 
+### CVE-2020-25084 (xHCI) — xhci_fire_ctl_transfer Assertion Failure
+
+`xhci_fire_ctl_transfer()` in `hw/usb/hcd-xhci.c` sends a control transfer with
+a DATA TRB whose direction field (TRB_TR_DIR) is set to OUT while the request is
+an IN transfer (GET_DESCRIPTOR, bmRequestType=0x80).  The direction mismatch causes
+`xhci_xfer_create_sgl()` to call `xhci_die()` and destroy the SGL (nsg→0).
+`xhci_setup_packet()` ignores the error; `usb_packet_map()` returns 0 with
+`iov.size=0`; `usb_handle_packet()` → `usb_packet_copy()` fires
+`assert(p->actual_length + bytes <= iov->size)`.
+
+Call chain: `xhci_doorbell_write` → `xhci_kick_ep` → `xhci_kick_epctx` →
+`xhci_fire_ctl_transfer` → `usb_handle_packet` → `usb_packet_copy` → **SIGABRT**.
+Affects QEMU 4.2.1 and 5.0.0; the QEMU 4.2.1 binary from `CVE-2020-14364/` can
+be reused.
+
+---
+
 ### Scavenger — CVE-2020-25084 (NVMe Stack UAF → VM Escape)
 
 *(Black Hat Asia 2021)*
@@ -122,6 +140,7 @@ Every CVE directory follows the same layout:
 ```
 CVE-XXXX-YYYY/
 ├── build.sh          # downloads + builds QEMU & Linux kernel
+├── exploit.sh        # one-click reproduction (build check + GDB crash)
 ├── launch.sh         # boots the VM interactively
 ├── attach.sh         # boots the VM under GDB, auto-catches SIGSEGV
 ├── .gitignore
@@ -135,6 +154,18 @@ CVE-XXXX-YYYY/
     ├── root/         # welcome banner
     └── bin/          # busybox symlinks (built by build.sh)
 ```
+
+### One-click reproduction
+
+```bash
+cd CVE-XXXX-YYYY/
+./exploit.sh
+```
+
+`exploit.sh` checks whether `qemu-system-x86_64` is present (running `build.sh`
+automatically if not), prints the expected crash indicator, then launches the
+VM under GDB via `attach.sh`.  For CVE-2019-14378, which causes a hang rather
+than a crash, a 90-second timeout is applied and exit code 124 confirms the bug.
 
 ### Build
 
@@ -175,8 +206,9 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
   with `make IASL= subdir-x86_64-softmmu` to avoid incompatibility with
   modern `iasl`.
 - **Library path**: if your system glibc differs from the build environment,
-  prepend `LD_LIBRARY_PATH=<path-to-libs>` when running
-  `qemu-system-x86_64` directly (e.g. a conda environment's `lib/` directory).
+  `attach.sh` auto-detects a conda installation (`conda info --base`) and
+  prepends its `lib/` directory to `LD_LIBRARY_PATH`.  You can also set
+  `LD_LIBRARY_PATH` manually before running any script.
 
 ---
 
