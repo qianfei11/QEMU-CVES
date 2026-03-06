@@ -1,22 +1,20 @@
 #!/bin/bash
-# Build script for Scavenger (CVE-2020-25084 / Black Hat Asia 2021)
-# Misuse of error-handling code in NVMe + virtio-gpu → QEMU/KVM escape
+# Build script for Scavenger (Black Hat Asia 2021)
+# Uninitialized free in NVMe nvme_map_prp() CMB code path
 #
 # Builds:
-#   1. QEMU v5.0.0  → ./qemu-system-x86_64
+#   1. QEMU v4.2.1  → ./qemu-system-x86_64
 #   2. Linux 5.4.40 → ./bzImage  (lightweight initramfs approach)
 #
 # Notes:
-#   - The full exploit requires /dev/mem access + NVMe + virtio-gpu
-#   - Configure with --extra-cflags="-pg" to match hardcoded offsets in exp.c
-#   - Offsets (system, nvme_process_sq, cleanup) are build-specific and
-#     must be re-derived via: nm qemu-system-x86_64 | grep <symbol>
+#   - The full exploit requires /dev/mem access + NVMe CMB (cmb_size_mb=64)
+#   - Configure with --extra-cflags="-pg" to emit gprof instrumentation
 #   - A NVMe backing image (nvme.img, 128 MB) is created during setup
 set -e
 
 JOBS=$(nproc)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QEMU_TAG="v5.0.0"
+QEMU_TAG="v4.2.1"
 BUILD_DIR="/tmp/qemu-scavenger"
 
 build_qemu() {

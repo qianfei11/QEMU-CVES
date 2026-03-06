@@ -1,85 +1,64 @@
 # Scavenger — Misuse of Error-Handling Code → QEMU/KVM Escape
 
-**Black Hat Asia 2021 / CVE-2020-25084**
+**Black Hat Asia 2021** ([hustdebug/scavenger](https://github.com/hustdebug/scavenger))
 
 ## Summary
 
 | Field      | Value |
 |:-----------|:------|
-| CVE        | CVE-2020-25084 |
-| Affected   | QEMU 5.x |
+| CVE        | N/A (no CVE assigned) |
+| Affected   | QEMU ≤ 4.2.1 (Debian 1:4.2-3ubuntu6.7) |
 | Component  | `hw/block/nvme.c`, `dma-helpers.c`, `virtio-gpu` |
-| Type       | Use-after-free (uninitialised stack → arbitrary free) |
+| Type       | Uninitialized free (stack garbage freed by `qemu_sglist_destroy`) |
 | Impact     | Full VM escape (host code execution) |
 
 ## Environment
 
 ```bash
 chmod +x build.sh launch.sh attach.sh rootfs/pack.sh rootfs/a.sh
-./build.sh        # builds QEMU v5.0.0 (with -pg) + Linux 5.4.40 + nvme.img
+./build.sh        # builds QEMU v4.2.1 (with -pg) + Linux 5.4.40 + nvme.img
 ./launch.sh       # interactive VM — run /exp manually
-./attach.sh       # GDB session
+./attach.sh       # GDB session (automated crash capture)
 ```
-
-> **Note:** Symbol offsets in `rootfs/exp.c` are build-specific.
-> `build.sh` prints the offsets after compiling QEMU — update the three
-> `#define` values accordingly before running the exploit.
 
 ## Vulnerability
 
 `nvme_dma_read_prp()` / `nvme_dma_write_prp()` declare a `QEMUSGList`
-on the **stack** and pass its address to `nvme_map_prp()`.  On the error
-path, `nvme_map_prp()` jumps to `unmap:` which calls
-`qemu_sglist_destroy()` on the **uninitialised** stack struct.
+on the **stack** and pass its address to `nvme_map_prp()`.  On the CMB
+(Controller Memory Buffer) code path, only `qsg->nsg = 0` is set —
+`qsg->dev`, `qsg->sg`, `qsg->as` remain **stack garbage**.  When `prp2=0`,
+the function jumps to `unmap:` which calls `qemu_sglist_destroy()` on the
+uninitialised struct, and `object_unref(garbage_pointer)` → SIGSEGV.
 
 ```c
-/* hw/block/nvme.c — nvme_dma_read_prp() */
-static uint16_t nvme_dma_read_prp(NvmeCtrl *n, uint8_t *ptr, uint32_t len,
-                                  uint64_t prp1, uint64_t prp2)
-{
-    QEMUSGList qsg;      /* stack — NOT zero-initialised */
-    QEMUIOVector iov;
-    if (nvme_map_prp(&qsg, &iov, prp1, prp2, len, n))
-        return NVME_INVALID_FIELD | NVME_DNR;
-    /* ... */
-}
-
-/* dma-helpers.c — qemu_sglist_destroy() */
-void qemu_sglist_destroy(QEMUSGList *qsg)
-{
-    object_unref(OBJECT(qsg->dev));  /* qsg->dev == stack garbage */
-    g_free(qsg->sg);                 /* qsg->sg  == stack garbage → arb free */
-    memset(qsg, 0, sizeof(*qsg));
-}
+/* hw/block/nvme.c — nvme_map_prp() */
+} else if (n->bar.cmbsz && prp1 >= n->ctrl_mem.addr &&
+           prp1 < n->ctrl_mem.addr + int128_get64(n->ctrl_mem.size)) {
+    qsg->nsg = 0;                    /* ← only this field set   */
+    qemu_iovec_init(iov, num_prps);  /*   dev/sg/as = stack junk */
+    qemu_iovec_add(iov, ...);
+    if (len != trans_len) {
+        if (!prp2) { goto unmap; }   /* ← prp2=0 → unmap        */
+    }
+} ...
+unmap:
+    qemu_sglist_destroy(qsg);        /* object_unref(garbage)    */
 ```
-
-Providing an invalid PRP1 address (e.g., `0xf8000000 + 0x500`) triggers
-the error path → `qemu_sglist_destroy()` runs on uninitialised memory.
 
 ## Exploit Chain
 
 ```
-1. Heap spray 0x290-byte NvmeRequest chunks (create_sq × 25)
-   → NvmeSQueue.io_req arrays land predictably in heap
-
-2. virtio-gpu RESOURCE_ATTACH_BACKING
-   → allocates 0x150 iov mapping table
-   → bounce entry with invalid addr forces dma_memory_map() fail
-   → qemu_sglist_destroy() frees the mapping table (UAF primitive)
-
-3. Reclaim freed 0x150 chunk with NvmeSQueue (create_sq)
-   → io_req[] now overlaps with user-controlled virtio-gpu memory
-
-4. Issue NVMe READ via that SQ (vuln())
-   → nvme_rw() calls nvme_map_prp() → bounce maps phymap base
-   → leak physmap address via UAF io_req overlap
-
-5. Repeat with 0x40 chunk to place NvmeRequest in freed timer struct
-   → create_sq allocates new timer adjacent to leaked memory
-   → leak timer pointer → derive QEMU base
-
-6. Overwrite timer->cb with system(), timer->opaque = &cmd_string
-   → trigger nvme_wr32(doorbell) → system() fires on host
+1. Heap spray to clear tcache freelist
+2. Alloc mapping table (physmap addr) → put in tcache head
+3. Free mapping table
+4. Alloc NvmeRequest → trigger NVMe CMB bug (prp1∈CMB, prp2=0)
+   → chunk in guest userspace added to QEMU tcache (UAF primitive)
+5. Re-alloc mapping table → overlaps with UAF chunk
+   → leak physmap base address
+6. Heap fengshui with create_sq + QEMUTimer placement
+   → leak QEMU text base + heap address
+7. Overwrite QEMUTimer.cb = slirp_smb_cleanup, .opaque = &cmd_str
+   → timer fires → system(cmd_str) → host code execution
 ```
 
 ## QEMU Launch Flags
@@ -91,149 +70,30 @@ the error path → `qemu_sglist_destroy()` runs on uninitialised memory.
 -display none
 ```
 
-## Deriving Symbol Offsets
+## Trigger Conditions
 
-```bash
-nm ./qemu-system-x86_64 | grep -E '\b(system|nvme_process_sq)\b'
-# example output:
-#   000000000002cf170 T system
-#   000000000005a7d00 T nvme_process_sq
-```
+1. `cmb_size_mb=64` must be set on the NVMe device (enables BAR2 CMB).
+2. `prp1` must fall inside the CMB range: `bar2_phys + 0x500` (non-page-aligned).
+3. `prp2 = 0` → `goto unmap` → `qemu_sglist_destroy` on uninit `qsg`.
 
-Update the three `#define` values at the top of `rootfs/exp.c`.
-
-## Vulnerability Code
-
-### `hw/block/nvme.c`
-
-```cpp
-static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
-    uint16_t sqid, uint16_t cqid, uint16_t size)
-{
-    /* ... */
-    sq->io_req = g_new(NvmeRequest, sq->size);
-    /* ... */
-}
-```
-
-```cpp
-static void nvme_process_sq(void *opaque)
-{
-    NvmeSQueue *sq = opaque;
-    /* ... */
-    while (!(nvme_sq_empty(sq) || QTAILQ_EMPTY(&sq->req_list))) {
-        /* ... */
-        status = sq->sqid ? nvme_io_cmd(n, &cmd, req) :
-            nvme_admin_cmd(n, &cmd, req);
-        /* ... */
-    }
-}
-```
-
-```cpp
-static uint16_t nvme_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
-    NvmeRequest *req)
-{
-    /* ... */
-    if (nvme_map_prp(&req->qsg, &req->iov, prp1, prp2, data_size, n)) {
-        block_acct_invalid(blk_get_stats(n->conf.blk), acct);
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-    /* ... */
-}
-```
-
-```cpp
-static uint16_t nvme_map_prp(QEMUSGList *qsg, QEMUIOVector *iov, uint64_t prp1,
-                             uint64_t prp2, uint32_t len, NvmeCtrl *n)
-{
-    /* ... */
- unmap:
-    qemu_sglist_destroy(qsg);
-    return NVME_INVALID_FIELD | NVME_DNR;
-}
-```
-
-### `dma-helpers.c`
-
-```cpp
-void qemu_sglist_destroy(QEMUSGList *qsg)
-{
-    object_unref(OBJECT(qsg->dev));
-    g_free(qsg->sg);
-    memset(qsg, 0, sizeof(*qsg));
-}
-```
-
-### `virtio-gpu` helper (`virtio_gpu_create_mapping_iov`)
-
-```cpp
-int virtio_gpu_create_mapping_iov(VirtIOGPU *g,
-                                  struct virtio_gpu_resource_attach_backing *ab,
-                                  struct virtio_gpu_ctrl_command *cmd,
-                                  uint64_t **addr, struct iovec **iov)
-{
-    /* ... */
-    *iov = g_malloc0(sizeof(struct iovec) * ab->nr_entries);
-    for (i = 0; i < ab->nr_entries; i++) {
-        (*iov)[i].iov_base = dma_memory_map(VIRTIO_DEVICE(g)->dma_as,
-                                            a, &len, DMA_DIRECTION_TO_DEVICE);
-        /* if dma_memory_map() fails → iov mapping table is leaked / freed */
-    }
-}
-```
-
-## Exploitation
-
-### Crash PoC (Stage 1 — Confirmed)
-
-The exploit in `rootfs/exp.c` triggers an immediate SIGSEGV in QEMU by:
-
-1. Scanning `/sys/bus/pci/devices/*/class` for the NVMe controller (class `0x010802`)
-2. Reading BAR0 (MMIO registers) and BAR2 (CMB, 64 MB) from the `resource` sysfs file
-3. Mapping BAR0 via `/dev/mem`, allocating two physically-locked pages for ASQ+ACQ
-4. Translating VA→PA via `/proc/self/pagemap`
-5. Initialising the NVMe admin queue (disable → set AQA/ASQ/ACQ → enable → wait RDY)
-6. Submitting an Identify Controller SQE with `prp1 = bar2_phys + 0x500`, `prp2 = 0`:
-   - `prp1` falls inside the CMB range → `nvme_map_prp` takes the CMB branch
-   - CMB branch only sets `qsg->nsg = 0`; `qsg->dev` / `qsg->sg` / `qsg->as` remain as **stack garbage**
-   - `prp1 % 4096 != 0` → `trans_len < len` → the code checks `prp2`
-   - `prp2 = 0` → `goto unmap` → `qemu_sglist_destroy(uninit qsg)` → `object_unref(garbage)`
-7. Ringing the SQ0 tail doorbell → QEMU SIGSEGV
-
-### GDB Crash Output
+## GDB Crash Output
 
 ```
 Thread 1 "qemu-system-x86" hit Catchpoint 1 (signal SIGSEGV),
-0x0000555555d185f8 in object_unref (obj=0x555555ab62d6 <_nocheck__trace_nvme_identify_ctrl+17>)
+0x0000... in object_unref (obj=<.text pointer — stack garbage qsg->dev>)
     at qom/object.c:1127
-#0  object_unref (obj=0x555555ab62d6) at qom/object.c:1127
-#1  qemu_sglist_destroy (qsg=0x7fffffffd2d0) at dma-helpers.c:66
-#2  nvme_map_prp (qsg=0x7fffffffd2d0, iov=0x7fffffffd300,
-      prp1=4160750848, prp2=0, len=1280, n=0x555557596ae0)
-      at hw/block/nvme.c:220
-#3  nvme_dma_read_prp (..., prp1=4160750848, prp2=0) at hw/block/nvme.c:257
-#4  nvme_identify_ctrl (...) at hw/block/nvme.c:656
-#5  nvme_identify (...) at hw/block/nvme.c:715
-#6  nvme_admin_cmd (...) at hw/block/nvme.c:859
-#7  nvme_process_sq (...) at hw/block/nvme.c:893
+#0  object_unref     (obj=...)           qom/object.c:1127
+#1  qemu_sglist_destroy (qsg=0x7fff....) dma-helpers.c:66
+#2  nvme_map_prp    (prp1=..., prp2=0)   hw/block/nvme.c:220
+#3  nvme_dma_read_prp                    hw/block/nvme.c:257
+#4  nvme_identify_ctrl                   hw/block/nvme.c:656
+#5  nvme_identify                        hw/block/nvme.c:715
+#6  nvme_admin_cmd                       hw/block/nvme.c:859
+#7  nvme_process_sq                      hw/block/nvme.c:893
 ```
-
-`obj = 0x555555ab62d6` is a pointer into QEMU's `.text` segment — this is the raw
-stack garbage that was in `qsg->dev` before `pci_dma_sglist_init()` was called.
-
-### Attack Strategy (Full Escape — requires additional primitives)
-
-See the Exploit Chain section above.  The crash PoC establishes Stage 1
-(control of `object_unref`/`g_free` arguments).  Stages 2-6 require heap
-shaping via `create_sq` and virtio-gpu `RESOURCE_ATTACH_BACKING` to turn
-the uninitialised-stack primitive into an arbitrary-write and ultimately
-`system()` execution on the host.
 
 ## References
 
 - [Black Hat Asia 2021 — Scavenger: Misuse Error Handling Leading to QEMU/KVM Escape](https://blackhat.com/asia-21/briefings/schedule/#scavenger-misuse-error-handling-leading-to-qemukvm-escape-21971)
 - [清道夫：误用"错误处理代码"导致的 QEMU/KVM 逃逸](https://mp.weixin.qq.com/s/1KYTZynabBqzNjoJhe1bWw)
-- [manishrma/nvme-qemu](https://github.com/manishrma/nvme-qemu)
-- [解决 Linux 内核问题实用技巧之 - Crash 工具结合/dev/mem 任意修改内存](https://mp.weixin.qq.com/s/040W19-CPF0VnUvwFSKiXw)
-- [Five Lines of Code: virtual-to-physical via /proc/pid/pagemap](http://fivelinesofcode.blogspot.com/2014/03/how-to-translate-virtual-to-physical.html)
+- [hustdebug/scavenger exploit repo](https://github.com/hustdebug/scavenger)
