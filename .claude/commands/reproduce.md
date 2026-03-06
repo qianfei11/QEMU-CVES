@@ -129,6 +129,41 @@ Typical crash indicators:
   - `--extra-cflags="-pg"` required for Scavenger build; `LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib` needed at runtime.
 - **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
+- **SLiRP EMU subsystem (CVE-2020-8608)**: libslirp 4.1.0 has `tcp_emu()` but it is
+  gated by `slirp->enable_emu`.  QEMU 4.2.1 calls `slirp_init()` (compat API) which
+  zeroes `SlirpConfig` with `memset`, leaving `enable_emu = false`.  Without patching
+  `slirp_init()` to set `cfg.enable_emu = true`, `tcp_tos()` never sets `so_emu` and
+  `tcp_emu()` is never called — the bug is unreachable.  The reproduction patches this
+  in `/tmp/libslirp-4.1.0/src/slirp.c` before `return slirp_new(...)`.
+- **SLiRP EMU_IRC trigger**: `tcptos[]` in libslirp 4.1.0 matches on **destination**
+  port 6667 only (`fport` field).  The guest must connect **to** port 6667.  Use
+  `guestfwd=tcp:10.0.2.100:6667-cmd:cat` in QEMU's `-netdev` options; `cmd:cat`
+  sets `SS_CTL` but `tcp_tos()` fires on the SYN before `SS_CTL` is set, so
+  `so_emu = EMU_IRC` is correctly assigned and `tcp_emu()` IS called on data.
+- **SLiRP mbuf layout (libslirp 4.1.0 / QEMU 4.2.1, MTU=1500, empirically measured)**:
+  `m_size = 1544`; `H_OFFSET = m_data − m_dat = 84` after IP+TCP headers stripped;
+  `M_ROOM = 1544 − 84 = 1460` bytes usable from `m_data`.  (Prior references citing
+  `m_size=1536`, `H=96`, `M_ROOM=1440` are wrong for this build.)
+- **SLiRP tcp_emu overflow math (CVE-2020-8608)**:
+  With `DCC_OFFSET = 1175`: payload = 1459 bytes; `m_inc(m, 1460)` reallocates
+  since `M_ROOM == 1460` (not `>` 1460); new `g_malloc(1544)` has 0 glibc padding;
+  `snprintf` outputs 295 bytes (294 chars + null); available = 285 bytes;
+  **10-byte heap overflow** into the next chunk's metadata.  With `DCC_OFFSET = 1155`
+  (available = 305) there is NO overflow; minimum DCC_OFFSET for overflow is 1166.
+- **GDB breakpoint for static symbols in shared libraries**:
+  Source-level breakpoints (`b tcp_subr.c:792`) remain "pending" and never fire for
+  static functions inside `.so` files.  Absolute addresses are ASLR-sensitive.
+  **Working technique**: set `b slirp_input` (exported symbol); in its `commands` block,
+  compute the inner breakpoint once via `b *((char *)&slirp_input + delta)` where
+  `delta = target_offset − slirp_input_offset` (both from `readelf -s libslirp.so`).
+  Use a `$flag == 0` guard to set the inner bp only once; the outer `slirp_input` bp
+  continues firing but is cheap.  Current delta for post-`snprintf` return in the
+  debug-patched libslirp: `0xad47`.
+- **GDB formula for bptr_off after snprintf call**:
+  At the breakpoint immediately after `snprintf` returns (before `m->m_len += snret`),
+  `m->m_len` holds `bptr − m_data` (set one line earlier).  Therefore:
+  `bptr_off = m->m_len` (NOT `m->m_len − snret`).
+  Available bytes = `M_ROOM − bptr_off`; overflow = `snret + 1 − available`.
 - **SLiRP ip_reass OOB exploit pattern (CVE-2019-14378)**:
   - Bug: in `ip_reass()` (`slirp/src/ip_input.c`), when a fragment mbuf has `M_EXT` set
     (allocated via `m_inc` for pkts > IF_MTU=1480 bytes), a stale `M_EXT` pointer is used to
