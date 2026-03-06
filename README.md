@@ -200,8 +200,10 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
   `CONFIG_UNWINDER_FRAME_POINTER=y`, `CONFIG_UNWINDER_ORC=n`.
   SLiRP-based CVEs also enable `CONFIG_E1000=y`.
   MMIO-based CVEs enable `CONFIG_STRICT_DEVMEM=n` / `CONFIG_DEVMEM=y`.
-- **Busybox**: the pre-built busybox binary is shared from
-  `some-vuln-examples/` and symlinked into each CVE's `rootfs/bin/`.
+- **Busybox**: each CVE directory ships a pre-built static `busybox` binary in
+  `rootfs/bin/`.  If the binary is missing (e.g. fresh build), `build.sh` copies
+  it from the host system (`/usr/bin/busybox` or `/bin/busybox`).
+  Install with `sudo apt-get install busybox-static` if needed.
 - **QEMU 2.x quirks**: requires Python 2 (`--python=python2`) and building
   with `make IASL= subdir-x86_64-softmmu` to avoid incompatibility with
   modern `iasl`.

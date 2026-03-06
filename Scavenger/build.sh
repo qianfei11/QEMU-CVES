@@ -88,16 +88,23 @@ build_kernel() {
 }
 
 setup_busybox() {
-    local REF_BUSYBOX="$SCRIPT_DIR/../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox"
     local DST="$SCRIPT_DIR/rootfs/bin/busybox"
-    if [ ! -f "$DST" ] && [ -f "$REF_BUSYBOX" ]; then
-        cp "$REF_BUSYBOX" "$DST"
-        chmod +x "$DST"
-        for cmd in sh ls cat echo mkdir mount umount halt mknod chown; do
-            ln -sf busybox "$SCRIPT_DIR/rootfs/bin/$cmd" 2>/dev/null || true
-        done
-        echo "[+] busybox installed"
+    [ -f "$DST" ] && return 0
+    local SRC=""
+    for candidate in /usr/bin/busybox /bin/busybox; do
+        [ -x "$candidate" ] && SRC="$candidate" && break
+    done
+    if [ -z "$SRC" ]; then
+        echo "[!] busybox not found. Install with: sudo apt-get install busybox-static" >&2
+        exit 1
     fi
+    mkdir -p "$SCRIPT_DIR/rootfs/bin"
+    cp "$SRC" "$DST"
+    chmod +x "$DST"
+    for cmd in sh ls cat echo mkdir mount umount halt mknod chown; do
+        ln -sf busybox "$SCRIPT_DIR/rootfs/bin/$cmd" 2>/dev/null || true
+    done
+    echo "[+] busybox installed from $SRC"
 }
 
 create_nvme_disk() {

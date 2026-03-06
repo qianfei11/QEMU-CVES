@@ -143,7 +143,9 @@ Typical crash indicators:
   - NVMe init: disable (CC.EN=0, wait CSTS.RDY=0), set AQA/ASQ/ACQ, enable (CC=0x00460001), wait CSTS.RDY=1.
   - Trigger: submit Identify Controller SQE with `prp1 = bar2_phys + 0x500` (in CMB, non-page-aligned), `prp2 = 0`; ring SQ0 doorbell at BAR0 + 0x1000.
   - `--extra-cflags="-pg"` required for Scavenger build; `LD_LIBRARY_PATH=$(conda info --base)/lib` needed at runtime if system libs are mismatched (auto-detected by the updated `attach.sh`).
-- **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
+- **Busybox**: each CVE directory ships `rootfs/bin/busybox` (static x86-64 binary,
+  tracked in git).  If absent, `build.sh` installs it from the host system
+  (`/usr/bin/busybox`).  Install with `sudo apt-get install busybox-static`.
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
 - **SLiRP EMU subsystem (CVE-2020-8608)**: libslirp 4.1.0 has `tcp_emu()` but it is
   gated by `slirp->enable_emu`.  QEMU 4.2.1 calls `slirp_init()` (compat API) which
