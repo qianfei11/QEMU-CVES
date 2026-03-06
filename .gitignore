@@ -35,6 +35,13 @@ venom
 **/modules.order
 **/Module.symvers
 
+# Runtime shared library deps copied alongside QEMU binary
+**/*.so
+**/*.so.*
+
+# Temporary debug binaries in rootfs
+**/rootfs/pcidbg
+
 # Claude Code session data (local only)
 .claude/projects/
 .claude/settings.local.json

@@ -91,13 +91,29 @@ Typical crash indicators:
 - **VENOM**: `rax = 0x4242424242424242` in `aio_bh_poll` (QEMUBH.cb overwrite)
 - **SLiRP**: crash inside `m_free` / `g_free` (mbuf overflow)
 - **PVSCSI**: crash in `pvscsi_process_io` (SG list overflow)
-- **USB EHCI**: OOB write in `do_token_out` / `do_token_in`
+- **USB EHCI (CVE-2020-14364)**: `rax = 0x4141414141414141` in `usb_bus_from_device`; crash in `ehci_work_bh` → `ehci_advance_async_state` → `ehci_state_execute` → `ehci_execute` → `usb_handle_packet` → `usb_packet_set_state` (heap neighbor of `data_buf` overwritten)
 - **Scavenger**: arbitrary free in `qemu_sglist_destroy` (stack garbage freed)
 
 ## Environment Notes
 
 - **LD_LIBRARY_PATH**: If QEMU segfaults on launch due to library mismatches,
   prepend `LD_LIBRARY_PATH=<path-to-libs>` when invoking `./qemu-system-x86_64`.
+- **Reusing a binary**: If `build.sh` requires unavailable libs (e.g. `libspice-server-dev`),
+  copy the `qemu-system-x86_64`, `pc-bios/`, and any `.so` files from another CVE directory
+  that uses the same QEMU tag — the binary is identical.
+- **rdinit=/a.sh**: When the kernel boots with `rdinit=/a.sh`, the `init` script
+  is **never** executed.  `a.sh` must mount `/proc`, `/sys`, and `/dev` itself
+  before running the exploit, otherwise sysfs lookups (e.g. PCI device scan) fail.
+- **EHCI MMIO exploit pattern**:
+  - Find EHCI by scanning `/sys/bus/pci/devices/*/class` for `0x0c0320` (USB EHCI).
+  - Unbind kernel driver: write BDF to `/sys/bus/pci/drivers/ehci-pci/unbind`.
+  - Map BAR0 via `/dev/mem`; read CAPLENGTH byte at offset 0 to get op-reg base.
+  - EHCI async list must be circular and exactly one QH must have `H=1`.
+  - QH with `qtd_next=T` (terminate bit set) is idle — EHCI skips it until armed.
+  - After HC reset, `portsc[i] = PORTSC_PP` (0x1000); CCS=0 so port reset may fail.
+    Power-cycle the port (clear PP → wait → set PP → wait) to restore device presence.
+  - Two consecutive SETUP tokens are the key primitive for CVE-2020-14364:
+    first establishes `setup_state=DATA`, second corrupts `setup_len` before stall.
 - **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
 - **MMIO CVEs**: need `CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n` in kernel
