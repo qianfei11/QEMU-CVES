@@ -28,6 +28,8 @@ CVE-XXXX-YYYY/
 | CVE | Directory | QEMU ver | Component | Type |
 |-----|-----------|----------|-----------|------|
 | CVE-2015-3456 | `CVE-2015-3456 (VENOM)/` | 2.2.0-rc1 | `hw/block/fdc.c` | FIFO overflow |
+| CVE-2015-5165 | `CVE-2015-5165/` | 2.3.0 | `hw/net/rtl8139.c` | Info leak |
+| CVE-2015-7504 | `CVE-2015-7504/` | 2.4.0 | `hw/net/pcnet.c` | Heap overflow |
 | CVE-2016-4952 | `CVE-2016-4952/` | 2.6.2 | `hw/scsi/vmw_pvscsi.c` | Heap overflow |
 | CVE-2019-6788 | `CVE-2019-6788/` | 3.1.0 | `slirp/tcp_subr.c` | Heap overflow |
 | CVE-2019-14378 | `CVE-2019-14378/` | 4.0.0 | `slirp/ip_input.c` | Heap overflow |
@@ -102,6 +104,8 @@ automatically.  GDB is configured with:
 
 Typical crash indicators:
 - **VENOM**: `rax = 0x4242424242424242` in `aio_bh_poll` (QEMUBH.cb overwrite)
+- **CVE-2015-5165 (RTL8139)**: guest RX buffers contain non-zero leaked tail bytes / host-like pointers after a malformed C+ loopback frame; no host crash is expected
+- **CVE-2015-7504 (PCNET)**: SIGSEGV in `qemu_set_irq` after a 4096-byte loopback transmit corrupts `PCNetState::irq` with the appended CRC/FCS (often visible as `irq=0x5555deadbeef`)
 - **SLiRP generic**: crash inside `m_free` / `g_free` (mbuf overflow)
 - **CVE-2019-14378 (SLiRP ip_reass)**: QEMU **hangs** (not SIGSEGV) — I/O thread stuck in `dtom()` infinite loop; QEMU exits with code 143 (SIGTERM from external kill) rather than crashing. Guest VCPUs continue running (MTTCG) but network is dead. Confirmed by: QEMU doesn't exit after guest kernel panic; must be killed by `timeout` or manually.
 - **PVSCSI**: crash in `pvscsi_process_io` (SG list overflow)

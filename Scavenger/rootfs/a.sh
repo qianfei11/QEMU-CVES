@@ -1,5 +1,6 @@
-#!/bin/sh
+#!/bin/busybox sh
 
+mkdir -p /dev /proc /sys /dev/pts
 # Mount essential pseudo-filesystems (rdinit= bypasses init, so we must do this)
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys

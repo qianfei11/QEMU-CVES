@@ -11,6 +11,8 @@ Each subdirectory contains a self-contained reproduction environment: build scri
 | Directory | CVE | QEMU Version | Component | Type |
 |:---|:---|:---|:---|:---|
 | `CVE-2015-3456 (VENOM)/` | CVE-2015-3456 | 2.2.0-rc1 | `hw/block/fdc.c` | FIFO buffer overflow |
+| `CVE-2015-5165/` | CVE-2015-5165 | 2.3.0 | `hw/net/rtl8139.c` | Information leak |
+| `CVE-2015-7504/` | CVE-2015-7504 | 2.4.0 | `hw/net/pcnet.c` | Heap buffer overflow |
 | `CVE-2016-4952/` | CVE-2016-4952 | 2.6.2 | `hw/scsi/vmw_pvscsi.c` | Heap buffer overflow |
 | `CVE-2019-6788/` | CVE-2019-6788 | 3.1.0 | `slirp/tcp_subr.c` | Heap buffer overflow |
 | `CVE-2019-14378/` | CVE-2019-14378 | 4.0.0 | `slirp/ip_input.c` | Heap buffer overflow |
@@ -34,6 +36,36 @@ can be overwritten.
 Patched in QEMU 2.3.0 (commit `e6f4d0b`) by adding the missing `else` branch that
 calls `fdctrl_reset_fifo()`.  **Confirmed working** — clean QEMU v2.2.0-rc1 crashes
 with `SIGSEGV` at `aio_bh_poll` with `rax = 0x4242424242424242`.
+
+---
+
+### CVE-2015-5165 — RTL8139 C+ Mode Information Leak
+
+`rtl8139_cplus_transmit_one()` in `hw/net/rtl8139.c` insufficiently validates
+Ethernet/IP/TCP header lengths before performing checksum and TSO offload.
+A malformed IPv4 frame with `IP Total Length < IHL` can make the transmit path
+reuse uninitialised host heap bytes and leak them back to the guest through the
+emulated NIC loopback path.
+
+This repository reproduction programs the RTL8139 directly from the guest,
+enables C+ transmit offload plus internal loopback, sends a malformed frame,
+and then recovers non-zero tail bytes / host-like pointers from guest-visible
+RX buffers.  The bug is fixed by the XSA-140 patch series, which adds the
+missing short-packet and header-length checks before offload continues.
+
+---
+
+### CVE-2015-7504 — PCNET Loopback CRC Heap Overflow
+
+`pcnet_transmit()` in `hw/net/pcnet.c` appends a 4-byte CRC/FCS to the loopback
+transmit buffer.  If the guest sends exactly 4096 bytes, the FCS write lands
+4 bytes past the end of `s->buffer`, corrupting adjacent host device state
+(`s->irq`) and typically crashing the QEMU process.
+
+This reproduction configures the emulated AMD PCnet card from guest userspace,
+places it into internal loopback mode, and sends an exact 4096-byte frame with
+an attacker-chosen final FCS so the overwrite is easy to recognise under GDB.
+The upstream fix reserves 4 bytes for the appended FCS (`sizeof(s->buffer)-4`).
 
 ---
 
@@ -221,4 +253,6 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
 - [CVE-2019-6788 分析 (a1ex.online)](http://a1ex.online/2021/10/24/CVE-2019-6788-Qemu%E9%80%83%E9%80%B8%E6%BC%8F%E6%B4%9E%E5%A4%8D%E7%8E%B0%E4%B8%8E%E5%88%86%E6%9E%90/)
 - [CVE-2019-14378 分析 (giantbranch)](https://www.giantbranch.cn/2019/10/09/QEMU%20%E8%99%9A%E6%8B%9F%E6%9C%BA%E9%80%83%E9%80%B8%E6%BC%8F%E6%B4%9E%EF%BC%88CVE-2019-14378%EF%BC%89%E6%BC%8F%E6%B4%9E%E5%88%86%E6%9E%90/)
 - [CVE-2020-14364漏洞复现 (anquanke)](https://www.anquanke.com/post/id/227283)
+- [XSA-140 / CVE-2015-5165](https://xenbits.xen.org/xsa/advisory-140.html)
+- [XSA-162 / CVE-2015-7504](https://xenbits.xen.org/xsa/advisory-162.html)
 - [NVD CVE list](https://nvd.nist.gov/)
