@@ -92,7 +92,7 @@ Typical crash indicators:
 - **SLiRP**: crash inside `m_free` / `g_free` (mbuf overflow)
 - **PVSCSI**: crash in `pvscsi_process_io` (SG list overflow)
 - **USB EHCI (CVE-2020-14364)**: `rax = 0x4141414141414141` in `usb_bus_from_device`; crash in `ehci_work_bh` → `ehci_advance_async_state` → `ehci_state_execute` → `ehci_execute` → `usb_handle_packet` → `usb_packet_set_state` (heap neighbor of `data_buf` overwritten)
-- **Scavenger**: arbitrary free in `qemu_sglist_destroy` (stack garbage freed)
+- **Scavenger (CVE-2020-25084)**: SIGSEGV in `object_unref` called from `qemu_sglist_destroy`; `obj` points into QEMU `.text` (stack garbage used as `qsg->dev`). Full backtrace: `object_unref ← qemu_sglist_destroy ← nvme_map_prp ← nvme_dma_read_prp ← nvme_identify_ctrl ← nvme_process_sq`
 
 ## Environment Notes
 
@@ -114,6 +114,14 @@ Typical crash indicators:
     Power-cycle the port (clear PP → wait → set PP → wait) to restore device presence.
   - Two consecutive SETUP tokens are the key primitive for CVE-2020-14364:
     first establishes `setup_state=DATA`, second corrupts `setup_len` before stall.
+- **NVMe CMB exploit pattern (Scavenger)**:
+  - Find NVMe by scanning `/sys/bus/pci/devices/*/class` for `0x010802`.
+  - Unbind kernel driver: write BDF to `/sys/bus/pci/drivers/nvme/unbind` (failure is OK — proceed anyway).
+  - BAR2 (CMB, 64 MB) is at line index 2 (0-based) of sysfs `resource` file.
+  - Map BAR0 via `/dev/mem`; allocate two 4096-byte locked pages for ASQ and ACQ.
+  - NVMe init: disable (CC.EN=0, wait CSTS.RDY=0), set AQA/ASQ/ACQ, enable (CC=0x00460001), wait CSTS.RDY=1.
+  - Trigger: submit Identify Controller SQE with `prp1 = bar2_phys + 0x500` (in CMB, non-page-aligned), `prp2 = 0`; ring SQ0 doorbell at BAR0 + 0x1000.
+  - `--extra-cflags="-pg"` required for Scavenger build; `LD_LIBRARY_PATH=/home/bea1e/miniconda3/lib` needed at runtime.
 - **Busybox**: shared from `../some-vuln-examples/pcnet-2.2.0/rootfs/bin/busybox`
 - **SLiRP network CVEs**: guest uses `10.0.2.15/24`, gateway `10.0.2.2`
 - **MMIO CVEs**: need `CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n` in kernel

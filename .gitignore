@@ -45,3 +45,4 @@ venom
 # Claude Code session data (local only)
 .claude/projects/
 .claude/settings.local.json
+gmon.out

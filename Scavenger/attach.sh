@@ -7,6 +7,7 @@ set -e
 cd rootfs && ./pack.sh
 cd ..
 
+LD_LIBRARY_PATH="/home/bea1e/miniconda3/lib:$LD_LIBRARY_PATH" \
 gdb \
     -ex 'set confirm off' \
     -ex 'set pagination off' \

@@ -183,6 +183,53 @@ int virtio_gpu_create_mapping_iov(VirtIOGPU *g,
 }
 ```
 
+## Exploitation
+
+### Crash PoC (Stage 1 — Confirmed)
+
+The exploit in `rootfs/exp.c` triggers an immediate SIGSEGV in QEMU by:
+
+1. Scanning `/sys/bus/pci/devices/*/class` for the NVMe controller (class `0x010802`)
+2. Reading BAR0 (MMIO registers) and BAR2 (CMB, 64 MB) from the `resource` sysfs file
+3. Mapping BAR0 via `/dev/mem`, allocating two physically-locked pages for ASQ+ACQ
+4. Translating VA→PA via `/proc/self/pagemap`
+5. Initialising the NVMe admin queue (disable → set AQA/ASQ/ACQ → enable → wait RDY)
+6. Submitting an Identify Controller SQE with `prp1 = bar2_phys + 0x500`, `prp2 = 0`:
+   - `prp1` falls inside the CMB range → `nvme_map_prp` takes the CMB branch
+   - CMB branch only sets `qsg->nsg = 0`; `qsg->dev` / `qsg->sg` / `qsg->as` remain as **stack garbage**
+   - `prp1 % 4096 != 0` → `trans_len < len` → the code checks `prp2`
+   - `prp2 = 0` → `goto unmap` → `qemu_sglist_destroy(uninit qsg)` → `object_unref(garbage)`
+7. Ringing the SQ0 tail doorbell → QEMU SIGSEGV
+
+### GDB Crash Output
+
+```
+Thread 1 "qemu-system-x86" hit Catchpoint 1 (signal SIGSEGV),
+0x0000555555d185f8 in object_unref (obj=0x555555ab62d6 <_nocheck__trace_nvme_identify_ctrl+17>)
+    at qom/object.c:1127
+#0  object_unref (obj=0x555555ab62d6) at qom/object.c:1127
+#1  qemu_sglist_destroy (qsg=0x7fffffffd2d0) at dma-helpers.c:66
+#2  nvme_map_prp (qsg=0x7fffffffd2d0, iov=0x7fffffffd300,
+      prp1=4160750848, prp2=0, len=1280, n=0x555557596ae0)
+      at hw/block/nvme.c:220
+#3  nvme_dma_read_prp (..., prp1=4160750848, prp2=0) at hw/block/nvme.c:257
+#4  nvme_identify_ctrl (...) at hw/block/nvme.c:656
+#5  nvme_identify (...) at hw/block/nvme.c:715
+#6  nvme_admin_cmd (...) at hw/block/nvme.c:859
+#7  nvme_process_sq (...) at hw/block/nvme.c:893
+```
+
+`obj = 0x555555ab62d6` is a pointer into QEMU's `.text` segment — this is the raw
+stack garbage that was in `qsg->dev` before `pci_dma_sglist_init()` was called.
+
+### Attack Strategy (Full Escape — requires additional primitives)
+
+See the Exploit Chain section above.  The crash PoC establishes Stage 1
+(control of `object_unref`/`g_free` arguments).  Stages 2-6 require heap
+shaping via `create_sq` and virtio-gpu `RESOURCE_ATTACH_BACKING` to turn
+the uninitialised-stack primitive into an arbitrary-write and ultimately
+`system()` execution on the host.
+
 ## References
 
 - [Black Hat Asia 2021 — Scavenger: Misuse Error Handling Leading to QEMU/KVM Escape](https://blackhat.com/asia-21/briefings/schedule/#scavenger-misuse-error-handling-leading-to-qemukvm-escape-21971)
