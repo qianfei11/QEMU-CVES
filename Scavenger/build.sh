@@ -51,39 +51,52 @@ build_qemu() {
     echo "[!] Update offsets in rootfs/exp.c before building rootfs."
 }
 
+# Helper: apply a kconfig fragment file to a .config.
+# Fragment format: CONFIG_OPTION=y or CONFIG_OPTION=n  (lines starting with # ignored)
+apply_kconfig_fragment() {
+    local frag="$1" cfg="$2"
+    local scripts_cfg="$LINUX_SRC/scripts/config"
+    while IFS='=' read -r key val; do
+        [[ "$key" == \#* || -z "${key//[[:space:]]/}" ]] && continue
+        key="${key//[[:space:]]/}"; val="${val//[[:space:]]/}"
+        case "$val" in
+            y) "$scripts_cfg" --file "$cfg" --enable  "$key" ;;
+            n) "$scripts_cfg" --file "$cfg" --disable "$key" ;;
+        esac
+    done < "$frag"
+}
+
 build_kernel() {
     echo "=== Building Linux 5.4.40 ==="
     KERNEL_VERSION="5.4.40"
+    ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+    LINUX_SRC="$ROOT_DIR/linux-${KERNEL_VERSION}"
+    LINUX_BUILD="$SCRIPT_DIR/linux-build"
     KERNEL_TARBALL="linux-${KERNEL_VERSION}.tar.xz"
     KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v5.x/${KERNEL_TARBALL}"
 
-    if [ ! -d "$SCRIPT_DIR/linux-${KERNEL_VERSION}" ]; then
-        echo "[*] Downloading $KERNEL_TARBALL ..."
-        wget -q --show-progress -O "$SCRIPT_DIR/$KERNEL_TARBALL" "$KERNEL_URL"
-        tar -xf "$SCRIPT_DIR/$KERNEL_TARBALL" -C "$SCRIPT_DIR"
-        rm -f "$SCRIPT_DIR/$KERNEL_TARBALL"
+    # Shared kernel source — download to repository root if not present
+    if [ ! -d "$LINUX_SRC" ]; then
+        echo "[*] Downloading $KERNEL_TARBALL to shared location ..."
+        wget -q --show-progress -O "$ROOT_DIR/$KERNEL_TARBALL" "$KERNEL_URL"
+        tar -xf "$ROOT_DIR/$KERNEL_TARBALL" -C "$ROOT_DIR"
+        rm -f "$ROOT_DIR/$KERNEL_TARBALL"
     fi
 
-    cd "$SCRIPT_DIR/linux-${KERNEL_VERSION}"
-
-    if [ ! -f .config ]; then
-        make x86_64_defconfig
-        scripts/config --enable  CONFIG_SERIAL_8250
-        scripts/config --enable  CONFIG_SERIAL_8250_CONSOLE
-        scripts/config --enable  CONFIG_BLK_DEV_INITRD
-        scripts/config --disable CONFIG_UNWINDER_ORC
-        scripts/config --enable  CONFIG_UNWINDER_FRAME_POINTER
-        # /dev/mem access required for MMIO mapping
-        scripts/config --enable  CONFIG_DEVMEM
-        scripts/config --disable CONFIG_STRICT_DEVMEM
-        # NVMe and virtio-gpu
-        scripts/config --enable  CONFIG_BLK_DEV_NVME
-        scripts/config --enable  CONFIG_DRM_VIRTIO_GPU
-        make olddefconfig
+    # Per-CVE out-of-tree build directory preserves each CVE's unique kernel config
+    mkdir -p "$LINUX_BUILD"
+    if [ ! -f "$LINUX_BUILD/.config" ]; then
+        make -C "$LINUX_SRC" O="$LINUX_BUILD" x86_64_defconfig
+        # Apply shared defaults (serial console, initramfs, frame-pointer unwinder)
+        apply_kconfig_fragment "$ROOT_DIR/default.config" "$LINUX_BUILD/.config"
+        # Apply CVE-specific options (DEVMEM, NVMe, virtio-gpu)
+        [ -f "$SCRIPT_DIR/kernel.config" ] && \
+            apply_kconfig_fragment "$SCRIPT_DIR/kernel.config" "$LINUX_BUILD/.config"
+        make -C "$LINUX_SRC" O="$LINUX_BUILD" olddefconfig
     fi
 
-    make -j"$JOBS" bzImage
-    cp arch/x86/boot/bzImage "$SCRIPT_DIR/bzImage"
+    make -C "$LINUX_SRC" O="$LINUX_BUILD" -j"$JOBS" bzImage
+    cp "$LINUX_BUILD/arch/x86/boot/bzImage" "$SCRIPT_DIR/bzImage"
     echo "[+] Kernel image: $SCRIPT_DIR/bzImage"
 }
 

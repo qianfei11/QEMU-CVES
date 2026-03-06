@@ -1,10 +1,16 @@
 #!/bin/bash
 # Launch Scavenger environment (interactive shell, run /exp manually)
-# NVMe + virtio-gpu escape chain (CVE-2020-25084)
+# NVMe CMB uninitialized QEMUSGList UAF → full VM escape chain
+# (Black Hat Asia 2021 — hustdebug/scavenger)
 # Requires nvme.img (created by build.sh).
 set -e
 cd rootfs && ./pack.sh
 cd ..
+
+# Prepend conda base lib dir if conda is available (provides libtinfow.so.6 and others).
+_CONDA_LIB="$(conda info --base 2>/dev/null)/lib"
+[ -d "$_CONDA_LIB" ] && export LD_LIBRARY_PATH="$_CONDA_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+unset _CONDA_LIB
 
 ./qemu-system-x86_64 \
     -L ./pc-bios \

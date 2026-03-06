@@ -17,7 +17,7 @@ Each subdirectory contains a self-contained reproduction environment: build scri
 | `CVE-2020-8608/` | CVE-2020-8608 | 4.2.1 | `slirp/tcp_subr.c` | Heap buffer overflow |
 | `CVE-2020-14364/` | CVE-2020-14364 | 4.2.1 | `hw/usb/core.c` | Out-of-bounds write |
 | `CVE-2020-25084/` | CVE-2020-25084 | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure (xHCI) |
-| `Scavenger/` | CVE-2020-25084 | 5.0.0 | `hw/block/nvme.c` | Use-after-free (NVMe) |
+| `Scavenger/` | N/A (no CVE) | 4.2.1 | `hw/block/nvme.c` | Use-after-free (NVMe CMB) |
 
 ---
 
@@ -118,9 +118,9 @@ be reused.
 
 ---
 
-### Scavenger — CVE-2020-25084 (NVMe Stack UAF → VM Escape)
+### Scavenger — NVMe CMB Uninitialized Stack UAF → VM Escape (No CVE)
 
-*(Black Hat Asia 2021)*
+*(Black Hat Asia 2021 — **not** CVE-2020-25084)*
 
 `nvme_dma_read_prp()` in `hw/block/nvme.c` declares a `QEMUSGList` on the
 **stack** without zero-initialising it, then passes it to `nvme_map_prp()`.  On the
@@ -131,6 +131,11 @@ Full exploit chain (see `Scavenger/README.md`):
 heap spray → virtio-gpu UAF primitive → chunk reclaim → physmap leak →
 QEMU base derivation → timer hijack → `system()` on host.
 
+> **Distinction from CVE-2020-25084:** Scavenger targets `hw/block/nvme.c`
+> (NVMe CMB) and achieves full VM escape.  CVE-2020-25084 targets
+> `hw/usb/hcd-xhci.c` (xHCI USB) and causes only a DoS (SIGABRT).
+> No CVE has been assigned to Scavenger.
+
 ---
 
 ## Common Workflow
@@ -139,10 +144,11 @@ Every CVE directory follows the same layout:
 
 ```
 CVE-XXXX-YYYY/
-├── build.sh          # downloads + builds QEMU & Linux kernel
+├── build.sh          # downloads + builds QEMU & Linux kernel (shared source at ../linux-5.4.40)
 ├── exploit.sh        # one-click reproduction (build check + GDB crash)
 ├── launch.sh         # boots the VM interactively
-├── attach.sh         # boots the VM under GDB, auto-catches SIGSEGV
+├── attach.sh         # boots the VM under GDB, auto-catches SIGSEGV/SIGABRT
+├── kernel.config     # CVE-specific kernel config fragment (applied on top of ../default.config)
 ├── .gitignore
 ├── README.md
 └── rootfs/
@@ -153,6 +159,24 @@ CVE-XXXX-YYYY/
     ├── etc/          # passwd, group, hostname, …
     ├── root/         # welcome banner
     └── bin/          # busybox symlinks (built by build.sh)
+```
+
+Generated artefacts (gitignored):
+
+```
+CVE-XXXX-YYYY/
+├── qemu-system-x86_64  # vulnerable QEMU binary (copied by build.sh)
+├── pc-bios/            # QEMU ROM files (copied by build.sh)
+├── bzImage             # guest kernel (compiled from ../linux-5.4.40)
+├── rootfs.cpio         # initramfs archive (packed by rootfs/pack.sh)
+└── linux-build/        # out-of-tree kernel build directory
+```
+
+Shared infrastructure at repo root:
+
+```
+linux-5.4.40/           # shared kernel source tree (used by all CVEs)
+default.config          # common kernel config options (base for all builds)
 ```
 
 ### One-click reproduction
@@ -176,8 +200,10 @@ chmod +x build.sh launch.sh attach.sh rootfs/pack.sh rootfs/a.sh
 ```
 
 `build.sh` clones the vulnerable QEMU tag into `/tmp/`, builds it, and copies
-`qemu-system-x86_64` and `pc-bios/` into the CVE directory.  It also downloads
-Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
+`qemu-system-x86_64` and `pc-bios/` into the CVE directory.  It builds the Linux
+guest kernel from the **shared source tree** at `../linux-5.4.40`, applying
+`../default.config` first and then the CVE's own `./kernel.config` fragment
+(where present), and writes the out-of-tree build to `./linux-build/`.
 
 ### Interactive VM
 
@@ -196,10 +222,11 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
 
 ## Infrastructure Notes
 
-- **Guest kernel**: Linux 5.4.40 with `x86_64_defconfig`,
-  `CONFIG_UNWINDER_FRAME_POINTER=y`, `CONFIG_UNWINDER_ORC=n`.
-  SLiRP-based CVEs also enable `CONFIG_E1000=y`.
-  MMIO-based CVEs enable `CONFIG_STRICT_DEVMEM=n` / `CONFIG_DEVMEM=y`.
+- **Guest kernel**: Linux 5.4.40, shared source at `linux-5.4.40/` in the repo
+  root.  Common options are in `default.config`; each CVE adds a
+  `./kernel.config` fragment on top (e.g. `CONFIG_E1000=y` for SLiRP CVEs,
+  `CONFIG_DEVMEM=y` for MMIO CVEs).  CVE-2015-3456 (VENOM) uses only the
+  default config.
 - **Busybox**: each CVE directory ships a pre-built static `busybox` binary in
   `rootfs/bin/`.  If the binary is missing (e.g. fresh build), `build.sh` copies
   it from the host system (`/usr/bin/busybox` or `/bin/busybox`).
@@ -207,10 +234,13 @@ Linux 5.4.40, builds `bzImage`, and prepares any disk images the CVE needs.
 - **QEMU 2.x quirks**: requires Python 2 (`--python=python2`) and building
   with `make IASL= subdir-x86_64-softmmu` to avoid incompatibility with
   modern `iasl`.
-- **Library path**: if your system glibc differs from the build environment,
-  `attach.sh` auto-detects a conda installation (`conda info --base`) and
-  prepends its `lib/` directory to `LD_LIBRARY_PATH`.  You can also set
-  `LD_LIBRARY_PATH` manually before running any script.
+- **Library path**: `launch.sh` and `attach.sh` set `LD_LIBRARY_PATH` to
+  `$(conda info --base)/lib`, providing `libtinfow.so.6` and other runtime
+  libraries from the active conda environment.  `libslirp.so.0` is used
+  directly from the system (`ldconfig`).  CVE-2020-8608 keeps two special
+  locally-built libslirp variants (`libslirp.so.0.1.0` debug-patched and
+  `libslirp-asan.so.0.1.0` ASAN-instrumented) that are not available from
+  any package.
 
 ---
 
