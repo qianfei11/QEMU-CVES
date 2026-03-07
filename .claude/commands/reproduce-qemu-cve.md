@@ -7,21 +7,28 @@ You are assisting with QEMU/KVM vulnerability reproduction in the `QEMU-CVES` pr
 
 ## Project Layout
 
-Each CVE subdirectory is self-contained:
+The Linux 5.4.40 kernel source is shared at the repo root. Each CVE directory builds its own kernel out-of-tree:
 
 ```
-CVE-XXXX-YYYY/
-├── build.sh      # clones + builds vulnerable QEMU & Linux 5.4.40
-├── exploit.sh    # one-click reproduction (build check → GDB crash demo)
-├── launch.sh     # interactive VM session
-├── attach.sh     # GDB session (rdinit=/a.sh auto-runs /exp, catches SIGSEGV)
-├── README.md     # root-cause analysis, patch, references
-└── rootfs/
-    ├── exp.c     # guest-side exploit (static, musl or glibc)
-    ├── init      # initramfs init script
-    ├── a.sh      # non-interactive exploit runner
-    └── pack.sh   # repack rootfs.cpio
+QEMU-CVES/
+├── linux-5.4.40/      # shared kernel source (1.4 GB; all CVEs build from here)
+├── default.config     # common kernel config fragment (serial console, initrd, etc.)
+└── CVE-XXXX-YYYY/
+    ├── build.sh       # clones + builds QEMU; builds kernel out-of-tree from ../linux-5.4.40
+    ├── exploit.sh     # one-click reproduction (build check → GDB crash demo)
+    ├── launch.sh      # interactive VM session (auto-detects conda LD_LIBRARY_PATH)
+    ├── attach.sh      # GDB session (rdinit=/a.sh auto-runs /exp, catches SIGSEGV)
+    ├── kernel.config  # CVE-specific kernel config fragment (applied on top of ../default.config)
+    ├── README.md      # root-cause analysis, patch, references
+    ├── linux-build/   # per-CVE out-of-tree kernel build dir (gitignored)
+    └── rootfs/
+        ├── exp.c      # guest-side exploit (static, musl or glibc)
+        ├── init       # initramfs init script
+        ├── a.sh       # non-interactive exploit runner
+        └── pack.sh    # repack rootfs.cpio
 ```
+
+**Kernel build architecture**: `build.sh` uses `make -C "$LINUX_SRC" O="$LINUX_BUILD"` for out-of-tree builds. The `apply_kconfig_fragment()` helper reads `CONFIG_FOO=y/n` lines from `kernel.config` and applies them via `scripts/config --file "$LINUX_BUILD/.config"`. This allows each CVE to have its own kernel config without duplicating the 1.4 GB source tree.
 
 ## CVE → Directory Map
 
@@ -35,8 +42,12 @@ CVE-XXXX-YYYY/
 | CVE-2019-14378 | `CVE-2019-14378/` | 4.0.0 | `slirp/ip_input.c` | Heap overflow |
 | CVE-2020-8608 | `CVE-2020-8608/` | 4.2.1 | `slirp/tcp_subr.c` | Heap overflow |
 | CVE-2020-14364 | `CVE-2020-14364/` | 4.2.1 | `hw/usb/core.c` | OOB write |
-| CVE-2020-25084 (xHCI) | `CVE-2020-25084/` | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure |
-| CVE-2020-25084 (NVMe) | `Scavenger/` | 5.0.0 | `hw/block/nvme.c` | UAF |
+| CVE-2020-25084 (xHCI) | `CVE-2020-25084/` | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure (DoS) |
+| N/A (Scavenger) | `Scavenger/` | 4.2.1 | `hw/block/nvme.c` | NVMe CMB UAF → VM escape |
+
+**CRITICAL**: `CVE-2020-25084` and `Scavenger` are completely different vulnerabilities:
+- **CVE-2020-25084**: xHCI USB assertion failure (`assert(p->actual_length + bytes <= iov->size)`) → SIGABRT/DoS only. USB component.
+- **Scavenger**: NVMe CMB path: `QEMUSGList` declared on stack in `nvme_map_prp`, only `nsg=0` set, `dev/sg/as` are garbage. `prp2=0` goes to `unmap:` → `qemu_sglist_destroy(garbage)` → SIGSEGV with `.text` address as `qsg->dev`. Full VM escape chain via heap spray + QEMU text base leak + QEMUTimer.cb overwrite. **No CVE assigned.**
 
 ## Standard Workflow
 
@@ -61,8 +72,10 @@ chmod +x build.sh launch.sh attach.sh rootfs/pack.sh rootfs/a.sh
 
 `build.sh` downloads the vulnerable QEMU tag into `/tmp/`, builds it with
 `--enable-debug --disable-werror`, then copies `qemu-system-x86_64` and
-`pc-bios/` here.  It also builds Linux 5.4.40 and creates any required disk
-images (`nvme.img`, `usb.img`, `scratch.img`).
+`pc-bios/` here.  It also builds Linux 5.4.40 out-of-tree into `./linux-build/`
+(shared source at `../linux-5.4.40`, downloaded if absent), applies
+`../default.config` then `./kernel.config` fragments, and creates any required
+disk images (`nvme.img`, `usb.img`, `scratch.img`).
 
 **QEMU 2.x quirks (CVE-2015-3456, CVE-2016-4952):**
 - Needs Python 2: `--python=python2`
@@ -115,14 +128,24 @@ Typical crash indicators:
 
 ## Environment Notes
 
-- **LD_LIBRARY_PATH**: If QEMU segfaults on launch due to library mismatches,
-  `attach.sh` scripts that need it auto-detect the conda base (`conda info --base`)
-  and prepend its `lib/` directory to `LD_LIBRARY_PATH`.  You can also set
-  `LD_LIBRARY_PATH` manually before running any script.
+- **LD_LIBRARY_PATH / conda**: All `launch.sh` and `attach.sh` scripts auto-detect the conda
+  base via `conda info --base` and prepend its `lib/` to `LD_LIBRARY_PATH`.  This provides
+  `libtinfow.so.6` (required by QEMU 4.0+) without bundling lib files.  System
+  `libslirp.so.0` is used directly — no local copy needed for most CVEs.
+  Pattern used in every script:
+  ```bash
+  _CONDA_LIB="$(conda info --base 2>/dev/null)/lib"
+  [ -d "$_CONDA_LIB" ] && export LD_LIBRARY_PATH="$_CONDA_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  unset _CONDA_LIB
+  ```
+- **CVE-2020-8608 special libslirp builds** (NOT in git; must be provided separately):
+  - `libslirp.so.0.1.0` — debug-patched libslirp 4.1.0 with `enable_emu=true` + `CVE-2020-8608-DBG` print statements
+  - `libslirp-asan.so.0.1.0` — ASAN-instrumented libslirp 4.1.0 compiled with `-fsanitize=address`
+  - `libslirp.so.0` — symlink managed by `attach.sh` (→ asan or debug version)
+  - `attach.sh` finds system `libasan.so.8.0.0` via `ldconfig -p` for `LD_PRELOAD`
+  - These cannot be replaced by system libslirp (different version, different patches)
 - **QEMU 4.0.0 library quirk**: links against `libtinfow.so.6` (wide-char ncurses);
-  if the system only has `libtinfo.so.6`, create a symlink in a local `libs/` dir:
-  `ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 libs/libtinfow.so.6` and
-  add `export LD_LIBRARY_PATH=$(pwd)/libs:$LD_LIBRARY_PATH` in `launch.sh`/`attach.sh`.
+  conda provides this — no manual symlink needed since scripts auto-detect conda.
 - **Reusing a binary**: If `build.sh` requires unavailable libs (e.g. `libspice-server-dev`),
   copy the `qemu-system-x86_64`, `pc-bios/`, and any `.so` files from another CVE directory
   that uses the same QEMU tag — the binary is identical.

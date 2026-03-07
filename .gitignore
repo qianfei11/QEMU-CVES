@@ -17,9 +17,11 @@ venom
 **/ubuntu.img
 **/ubuntu*.qcow2
 
-# QEMU and kernel source trees
+# QEMU and kernel source/build trees
 **/qemu-*/
 **/linux-*/
+# Per-CVE out-of-tree kernel build directories
+linux-build/
 
 # BIOS ROM files (copied from build)
 **/pc-bios/

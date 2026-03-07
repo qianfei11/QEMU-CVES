@@ -6,7 +6,7 @@ ubuntu.img
 *.qcow2
 pc-bios/
 qemu-src/
-linux-*/
+linux-build/
 rootfs/bin/*
 !rootfs/bin/busybox
 rootfs/exp
