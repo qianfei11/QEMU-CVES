@@ -1,24 +1,14 @@
+Scavenger
+=========
 
-  ____
- / ___|  ___ __ ___   _____ _ __   __ _  ___ _ __
- \___ \ / __/ _` \ \ / / _ \ '_ \ / _` |/ _ \ '__|
-  ___) | (_| (_| |\ V /  __/ | | | (_| |  __/ |
- |____/ \___\__,_| \_/ \___|_| |_|\__, |\___|_|
-                                   |___/
+Scavenger — Misuse of Error-Handling Code -> QEMU/KVM Escape
+Black Hat Asia 2021 — no CVE assigned
 
-   Scavenger — Misuse of Error-Handling Code → QEMU/KVM Escape
-   (Black Hat Asia 2021 / CVE-2020-25084)
+Tested:    QEMU 4.2.1 in this repository  (hw/block/nvme.c + dma-helpers.c)
+Bug:       The NVMe CMB path reaches qemu_sglist_destroy() with an
+           uninitialized stack QEMUSGList, freeing stack garbage as heap
+           pointers and opening the way for the published escape chain.
+Chain:     NVMe uninitialized free -> virtio-gpu UAF primitive ->
+           physmap leak -> QEMU base leak -> timer callback hijack
 
-   Affected:  QEMU 5.x  (hw/block/nvme.c + dma-helpers.c)
-   Bug:       nvme_dma_read_prp() / nvme_dma_write_prp() pass a
-              stack-allocated QEMUSGList to nvme_map_prp(); on the
-              error path, qemu_sglist_destroy() frees qsg->sg even
-              though the list was never fully initialised, allowing
-              heap layout control for a subsequent UAF chain.
-   Chain:     NVMe UAF → virtio-gpu heap leak → QEMU base leak →
-              timer callback hijack → system() RCE on host.
-
-   Offsets in exp.c are build-specific — re-derive with:
-     nm ./qemu-system-x86_64 | grep -E '(^| )(system|nvme_process_sq|cleanup)\b'
-
-   Run:  /exp    to trigger the escape
+Run:       /exp

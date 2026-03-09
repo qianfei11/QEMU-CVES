@@ -1,6 +1,8 @@
-# QEMU-CVES — VM Escape Vulnerability Collection
+# QEMU-CVES — QEMU/KVM Vulnerability Reproduction Collection
 
-A collection of QEMU/KVM vulnerability reproductions covering buffer overflows, use-after-free, and out-of-bounds write bugs that lead to VM escape (host code execution).
+A collection of QEMU/KVM vulnerability reproductions spanning information leaks,
+memory corruption, assertion failures, denial-of-service bugs, and full VM-escape
+chains.
 
 Each subdirectory contains a self-contained reproduction environment: build scripts, a minimal Linux guest (Linux 5.4.40 + busybox), and a skeleton exploit.
 
@@ -13,13 +15,13 @@ Each subdirectory contains a self-contained reproduction environment: build scri
 | `CVE-2015-3456 (VENOM)/` | CVE-2015-3456 | 2.2.0-rc1 | `hw/block/fdc.c` | FIFO buffer overflow |
 | `CVE-2015-5165/` | CVE-2015-5165 | 2.3.0 | `hw/net/rtl8139.c` | Information leak |
 | `CVE-2015-7504/` | CVE-2015-7504 | 2.4.0 | `hw/net/pcnet.c` | Heap buffer overflow |
-| `CVE-2016-4952/` | CVE-2016-4952 | 2.6.2 | `hw/scsi/vmw_pvscsi.c` | Heap buffer overflow |
+| `CVE-2016-4952/` | CVE-2016-4952 | 2.6.2 | `hw/scsi/vmw_pvscsi.c` | Host DoS (ring setup / infinite loop PoC) |
 | `CVE-2019-6788/` | CVE-2019-6788 | 3.1.0 | `slirp/tcp_subr.c` | Heap buffer overflow |
 | `CVE-2019-14378/` | CVE-2019-14378 | 4.0.0 | `slirp/ip_input.c` | Heap buffer overflow |
 | `CVE-2020-8608/` | CVE-2020-8608 | 4.2.1 | `slirp/tcp_subr.c` | Heap buffer overflow |
 | `CVE-2020-14364/` | CVE-2020-14364 | 4.2.1 | `hw/usb/core.c` | Out-of-bounds write |
 | `CVE-2020-25084/` | CVE-2020-25084 | 4.2.1 | `hw/usb/hcd-xhci.c` + `hw/usb/core.c` | Assertion failure (xHCI) |
-| `Scavenger/` | N/A (no CVE) | 4.2.1 | `hw/block/nvme.c` | Use-after-free (NVMe CMB) |
+| `Scavenger/` | N/A (no CVE) | 4.2.1 | `hw/block/nvme.c` | Uninitialized free (NVMe CMB) |
 
 ---
 
@@ -69,22 +71,22 @@ The upstream fix reserves 4 bytes for the appended FCS (`sizeof(s->buffer)-4`).
 
 ---
 
-### CVE-2016-4952 — PVSCSI Ring Heap Overflow
+### CVE-2016-4952 — PVSCSI Ring-Setup Host DoS (Repository PoC)
 
-`pvscsi_ring_pop_req_descr()` in `hw/scsi/vmw_pvscsi.c` copies scatter-gather
-entries from a guest-controlled request descriptor into a fixed-size host buffer
-without validating the `numSGEs` field against `PVSCSI_MAX_SG_ENTRIES` (255).
-A malicious guest can overflow the host SG buffer by supplying an oversized count.
+This repository's implemented PoC exercises the PVSCSI ring-setup path in
+`hw/scsi/vmw_pvscsi.c`: sending `PVSCSI_CMD_SETUP_RINGS` with
+`reqRingNumPages=0` makes `pvscsi_ring_init_data()` call
+`pvscsi_log2(0xffffffff)`, after which the host-side loop never terminates.
 
-Attack vector: MMIO (PCI BAR0) + DMA via the PVSCSI adapter.
-Patched by clamping the loop bound with `MIN(descr->numSGEs, PVSCSI_MAX_SG_ENTRIES)`.
+Attack vector: MMIO (PCI BAR0) via the PVSCSI adapter. The PoC is treated as a
+host DoS verification under GDB, not as a guest-to-host code-execution exploit.
 
 ---
 
 ### CVE-2019-6788 — SLiRP FTP/IRC `tcp_emu()` Heap Overflow
 
 `tcp_emu()` in `slirp/tcp_subr.c` handles FTP PORT and IRC DCC traffic by parsing
-with `sscanf` then writing a rewritten string back into the same mbuf with `sprintf`,
+with `sscanf` then writing a rewritten string back into the same mbuf with `snprintf`,
 without checking that the result fits within the mbuf boundary.  A guest can trigger
 the overflow by connecting to SLiRP's FTP emulation (port 21) or IRC (port 6667)
 and sending a crafted PORT or DCC command.
@@ -111,7 +113,7 @@ Patched by adding a `next > IP_MAXPACKET` check before `m_inc()`.
 Closely related to CVE-2019-6788.  `tcp_emu()`'s IRC DCC SEND handler in
 `slirp/tcp_subr.c` rewrites the DCC packet's embedded IP address to the SLiRP
 external address.  When the rewritten address is longer than the original, the
-`sprintf` call overflows the backing mbuf.
+`snprintf` call overflows the backing mbuf.
 
 Attack vector: guest connects to 10.0.2.2:6667 and sends a DCC SEND with a
 256-byte filename and a short internal IP that SLiRP expands to a longer external
@@ -150,7 +152,7 @@ be reused.
 
 ---
 
-### Scavenger — NVMe CMB Uninitialized Stack UAF → VM Escape (No CVE)
+### Scavenger — NVMe CMB Uninitialized Stack Free → VM Escape (No CVE)
 
 *(Black Hat Asia 2021 — **not** CVE-2020-25084)*
 
@@ -172,15 +174,15 @@ QEMU base derivation → timer hijack → `system()` on host.
 
 ## Common Workflow
 
-Every CVE directory follows the same layout:
+Most directories follow a layout like:
 
 ```
 CVE-XXXX-YYYY/
 ├── build.sh          # downloads + builds QEMU & Linux kernel (shared source at ../linux-5.4.40)
-├── exploit.sh        # one-click reproduction (build check + GDB crash)
+├── exploit.sh        # one-click verification (build check + GDB/timeout harness)
 ├── launch.sh         # boots the VM interactively
-├── attach.sh         # boots the VM under GDB, auto-catches SIGSEGV/SIGABRT
-├── kernel.config     # CVE-specific kernel config fragment (applied on top of ../default.config)
+├── attach.sh         # boots the VM under GDB and auto-runs /exp via rdinit=/a.sh
+├── kernel.config     # optional scenario-specific kernel config fragment
 ├── .gitignore
 ├── README.md
 └── rootfs/
@@ -219,9 +221,10 @@ cd CVE-XXXX-YYYY/
 ```
 
 `exploit.sh` checks whether `qemu-system-x86_64` is present (running `build.sh`
-automatically if not), prints the expected crash indicator, then launches the
-VM under GDB via `attach.sh`.  For CVE-2019-14378, which causes a hang rather
-than a crash, a 90-second timeout is applied and exit code 124 confirms the bug.
+automatically if not), prints the expected success/crash/hang indicator, then
+launches the documented verification harness. For CVE-2019-14378, which causes
+a hang rather than a crash, a 90-second timeout is applied and exit code 124
+confirms the bug.
 
 ### Build
 
@@ -231,11 +234,12 @@ chmod +x build.sh launch.sh attach.sh rootfs/pack.sh rootfs/a.sh
 ./build.sh
 ```
 
-`build.sh` clones the vulnerable QEMU tag into `/tmp/`, builds it, and copies
-`qemu-system-x86_64` and `pc-bios/` into the CVE directory.  It builds the Linux
-guest kernel from the **shared source tree** at `../linux-5.4.40`, applying
-`../default.config` first and then the CVE's own `./kernel.config` fragment
-(where present), and writes the out-of-tree build to `./linux-build/`.
+`build.sh` builds the vulnerable QEMU tag (either in `/tmp/` or in a local
+source tree, depending on the directory) and copies `qemu-system-x86_64` plus
+`pc-bios/` into the scenario directory. It builds the Linux guest kernel from
+the **shared source tree** at `../linux-5.4.40`, applying `../default.config`
+first and then the directory's own `./kernel.config` fragment (where present),
+and writes the out-of-tree build to `./linux-build/`.
 
 ### Interactive VM
 
@@ -243,11 +247,11 @@ guest kernel from the **shared source tree** at `../linux-5.4.40`, applying
 ./launch.sh      # opens a shell inside the VM; run /exp to trigger the bug
 ```
 
-### Automated crash (non-interactive)
+### Automated verification (non-interactive)
 
 ```bash
 ./attach.sh      # launches GDB; the VM boots with rdinit=/a.sh, which runs /exp
-                 # automatically; GDB catches SIGSEGV
+                 # automatically; GDB stops on the documented crash/hang point
 ```
 
 ---
@@ -259,9 +263,9 @@ guest kernel from the **shared source tree** at `../linux-5.4.40`, applying
   `./kernel.config` fragment on top (e.g. `CONFIG_E1000=y` for SLiRP CVEs,
   `CONFIG_DEVMEM=y` for MMIO CVEs).  CVE-2015-3456 (VENOM) uses only the
   default config.
-- **Busybox**: each CVE directory ships a pre-built static `busybox` binary in
-  `rootfs/bin/`.  If the binary is missing (e.g. fresh build), `build.sh` copies
-  it from the host system (`/usr/bin/busybox` or `/bin/busybox`).
+- **Busybox**: each directory uses a static `busybox` binary in `rootfs/bin/`.
+  If the binary is missing, `build.sh` copies it from the host system
+  (`/usr/bin/busybox` or `/bin/busybox`).
   Install with `sudo apt-get install busybox-static` if needed.
 - **QEMU 2.x quirks**: requires Python 2 (`--python=python2`) and building
   with `make IASL= subdir-x86_64-softmmu` to avoid incompatibility with

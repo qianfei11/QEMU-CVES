@@ -37,9 +37,9 @@ No libraries are bundled in this directory.
 | `launch.sh` | Boots the VM interactively; run `/exp` manually inside |
 | `attach.sh` | GDB session — VM boots with `rdinit=/a.sh`, exploit runs automatically |
 | `exploit.sh` | One-click: checks for `qemu-system-x86_64`, invokes `attach.sh` |
-| `kernel.config` | CVE-specific kernel config fragment (`CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n`, `CONFIG_IO_STRICT_DEVMEM=n`); applied on top of `../default.config` |
+| `kernel.config` | Scenario-specific kernel config fragment (`CONFIG_DEVMEM=y`, `CONFIG_STRICT_DEVMEM=n`, `CONFIG_IO_STRICT_DEVMEM=n`); applied on top of `../default.config` |
 | `nvme.img` | NVMe backing disk image (required for the NVMe CMB bug trigger) |
-| `rootfs/exp.c` | Guest-side exploit source (NVMe CMB UAF → VM escape chain) |
+| `rootfs/exp.c` | Guest-side exploit source (NVMe CMB uninitialized-free crash PoC / exploit scaffold) |
 | `rootfs/pack.sh` | Compiles `exp.c` and repacks `rootfs.cpio` |
 | `rootfs/a.sh` | Minimal init: mounts `/proc`/`/sys`/`/dev`, runs `/exp`, halts |
 | `rootfs/init` | Standard initramfs init script (interactive boot) |

@@ -1,5 +1,5 @@
 #!/bin/bash
-# GDB debug script for Scavenger (CVE-2020-25084, NVMe + virtio-gpu escape)
+# GDB debug script for Scavenger (no CVE assigned, NVMe + virtio-gpu escape)
 # Useful breakpoints:
 #   b nvme_dma_read_prp    — entry to vulnerable DMA function
 #   b qemu_sglist_destroy  — where uninitialized qsg is freed

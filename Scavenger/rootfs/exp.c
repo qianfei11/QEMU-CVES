@@ -1,8 +1,8 @@
 /*
- * CVE-2020-25084 "Scavenger" Crash PoC
+ * Scavenger Crash PoC (no CVE assigned)
  * NVMe Controller Memory Buffer path → qemu_sglist_destroy on uninitialized stack
  *
- * Affected: QEMU 5.x  (hw/block/nvme.c, dma-helpers.c)
+ * Tested in this repository with QEMU 4.2.1  (hw/block/nvme.c, dma-helpers.c)
  *
  * Vulnerability:
  *   nvme_dma_read_prp() declares a QEMUSGList on the stack (uninitialised) and
@@ -231,7 +231,7 @@ static void unbind_nvme(const char *bdf)
 /* ================================================================== */
 int main(void)
 {
-    printf("[*] CVE-2020-25084 — NVMe qemu_sglist_destroy uninitialized stack PoC\n\n");
+    printf("[*] Scavenger — NVMe qemu_sglist_destroy uninitialized stack PoC\n\n");
 
     /* ---------------------------------------------------------------- */
     /* 1.  Find NVMe PCI device via sysfs                               */

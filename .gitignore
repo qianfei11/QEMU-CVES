@@ -20,6 +20,8 @@ venom
 # QEMU and kernel source/build trees
 **/qemu-*/
 **/linux-*/
+# Kernel source tarballs (downloaded by build.sh, should not be committed)
+linux-*.tar.xz
 # Per-CVE out-of-tree kernel build directories
 linux-build/
 

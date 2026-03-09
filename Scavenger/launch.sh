@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch Scavenger environment (interactive shell, run /exp manually)
-# NVMe CMB uninitialized QEMUSGList UAF → full VM escape chain
+# NVMe CMB uninitialized free → full VM escape chain
 # (Black Hat Asia 2021 — hustdebug/scavenger)
 # Requires nvme.img (created by build.sh).
 set -e
